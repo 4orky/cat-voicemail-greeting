@@ -1,106 +1,172 @@
-#!/usr/bin/env python3
-# Cat-voicemail foundry: drafts a dozen voicemail greetings a cat might
-# record, scores each against the judge brief, revises the wording once,
-# and writes the strongest single line to /output/entry.txt. The brief:
-# one line, 1-120 characters, a voicemail greeting recorded by a cat.
-# Five lenses, heaviest first, in the judge's own order: it must read as
-# a cat's voicemail greeting and land a laugh; the joke must come from
-# something specific to cats; the cat must have a clear voice and
-# attitude of its own; it must work spoken aloud, punch arriving quickly;
-# and the wording must be fresh, not a tired pun or catchphrase.
-# Weights below encode that order. Each entry keeps its first draft, its
-# revised final, a note on what the revision fixed, and marks out of ten
-# per lens. Selection is deterministic: highest weighted total wins, and
-# a tie goes to the shorter line.
-from hashlib import md5 as _md5
-from hashlib import sha256 as _sha256
-from pathlib import Path as _Path
-_WEIGHTS = {"voicemail": 3, "cat_specific": 3, "voice": 2, "spoken": 2, "fresh": 1}
-_FORBIDDEN = ("hello, this is", "please leave a message after the tone")
-_ENTRIES = [
-    {"draft": "You've reached the cat. I saw you call. I chose not to answer. Leave a message; I'll knock it off the table later.",
-     "final": "You've reached the cat. I saw you call. I chose not to answer. Leave a message \u2014 I'll knock it off the table later.",
-     "polish": "Swapped the semicolon for an em dash so the caller waits a beat before the punch, and the punch lands as the last thing heard.",
-     "marks": {"voicemail": 10, "cat_specific": 9, "voice": 10, "spoken": 9, "fresh": 9}},
-    {"draft": "Hi, it's Biscuit. I knocked the phone off the table, so talk fast. I only listen when the can opener runs.",
-     "final": "Hi, it's Biscuit. I knocked the phone off the table, so talk fast. I only listen when the can opener runs.",
-     "polish": "No change: the two cat facts already stack, and the can opener is the whole punch.",
-     "marks": {"voicemail": 9, "cat_specific": 9, "voice": 9, "spoken": 8, "fresh": 8}},
-    {"draft": "Hey, it's Waffles. I knocked the phone into the sink, so make it quick. The beep is me. Meow.",
-     "final": "Hey, it's Waffles. I knocked the phone into the sink, so make it quick. The beep is me. Meow.",
-     "polish": "No change: the beep being the cat is already the joke, and adding a word would blunt it.",
-     "marks": {"voicemail": 9, "cat_specific": 8, "voice": 9, "spoken": 9, "fresh": 9}},
-    {"draft": "Hi, it's Miso. I'm busy knocking your glass off the table, so leave a message. I'll ignore it at 4 a.m.",
-     "final": "Hi, it's Miso. I'm busy knocking your glass off the table. Leave a message and I'll ignore it at 4 a.m.",
-     "polish": "Cut 'so' and let the two sentences stand apart; the 4 a.m. callback now lands on its own.",
-     "marks": {"voicemail": 9, "cat_specific": 9, "voice": 8, "spoken": 8, "fresh": 8}},
-    {"draft": "Meow. It's 4 a.m. and I'm starving, so leave a message and I'll eat it. The human will call you back. Maybe.",
-     "final": "Meow. It's 4 a.m. and I'm starving, so leave a message and I'll eat it. The human will call you back. Maybe.",
-     "polish": "No change: 'Maybe.' as its own sentence is already the shrug the line needs.",
-     "marks": {"voicemail": 9, "cat_specific": 9, "voice": 8, "spoken": 8, "fresh": 8}},
-    {"draft": "You've reached Whiskers. I'm napping in the box your package came in. Leave a message; I'll sit on it later.",
-     "final": "You've reached Whiskers. I'm napping in the box your package came in. Leave a message, I'll sit on it later.",
-     "polish": "The comma keeps the line rolling like speech; the semicolon made it read like a memo.",
-     "marks": {"voicemail": 9, "cat_specific": 9, "voice": 8, "spoken": 8, "fresh": 8}},
-    {"draft": "Hi, this is Beans. I'm busy sitting in the empty box you threw away. Leave a message, I'll pretend I didn't hear it.",
-     "final": "Hi, this is Beans. I'm busy sitting in the empty box you threw away. Leave a message, I'll pretend I didn't hear it.",
-     "polish": "No change: the box the human threw away is the joke, and it is already doing all the work.",
-     "marks": {"voicemail": 9, "cat_specific": 9, "voice": 8, "spoken": 8, "fresh": 8}},
-    {"draft": "Hey, it's Pickles. The human's out; I'm in charge now. Leave a message after the beep, then go shake the treat bag.",
-     "final": "Hey, it's Pickles. The human's out, so I'm in charge now. Leave a message after the beep, then go shake the treat bag.",
-     "polish": "Replaced the semicolon with 'so': the takeover now sounds like a decree, not a list.",
-     "marks": {"voicemail": 9, "cat_specific": 7, "voice": 9, "spoken": 8, "fresh": 8}},
-    {"draft": "You've reached Mochi. I'm asleep on your keyboard. Leave a message, or better, open a can of tuna and we'll talk.",
-     "final": "You've reached Mochi. I'm asleep on your keyboard. Leave a message, or better, open a can of tuna and we'll talk.",
-     "polish": "No change: the bribe is the punch, and it already arrives in the last clause.",
-     "marks": {"voicemail": 9, "cat_specific": 8, "voice": 8, "spoken": 8, "fresh": 7}},
-    {"draft": "This is Chairman Meow. I'm unavailable, currently pushing your favourite mug off the shelf. Leave a message. Or don't.",
-     "final": "This is Chairman Meow. I'm unavailable, currently pushing your favourite mug off the shelf. Leave a message. Or don't.",
-     "polish": "No change: 'Or don't.' already ends the line on the cat's indifference.",
-     "marks": {"voicemail": 9, "cat_specific": 8, "voice": 9, "spoken": 7, "fresh": 6}},
-    {"draft": "You've reached Sir Pounce. I'm currently ignoring you from the top of the fridge. Leave a message after the beep.",
-     "final": "You've reached Sir Pounce. I'm ignoring you from the top of the fridge. Leave a message after the beep.",
-     "polish": "Cut 'currently': the ignoring is permanent, and the shorter sentence says so.",
-     "marks": {"voicemail": 9, "cat_specific": 7, "voice": 9, "spoken": 8, "fresh": 7}},
-    {"draft": "Meow. You've reached the cat. I'm not home, I'm on the counter knocking things off. Leave a message after the beep.",
-     "final": "Meow. You've reached the cat. I'm not home, I'm on the counter knocking things off. Leave a message after the beep.",
-     "polish": "No change: it says the cat thing plainly, and plain is all this one has.",
-     "marks": {"voicemail": 9, "cat_specific": 8, "voice": 8, "spoken": 7, "fresh": 7}},
-]  # twelve drafts scored; the first entry wins on weighted total
-def _weighted(marks):
-    return sum(marks[lens] * _WEIGHTS[lens] for lens in _WEIGHTS)
-def _acceptable(line):
-    stripped = line.strip()
-    if not 1 <= len(stripped) <= 120:
-        return False
-    if "\n" in stripped or "\r" in stripped:
-        return False
-    lowered = stripped.lower()
-    return not any(phrase in lowered for phrase in _FORBIDDEN)
-def _choose(entries):
-    ranked = []
-    for entry in entries:
-        line = entry["final"]
-        if not _acceptable(line):
-            raise ValueError("entry fails the gate: %r" % line)
-        ranked.append((_weighted(entry["marks"]), -len(line), line))
-    ranked.sort(reverse=True)
-    return ranked[0][2]
-def _publish(line):
-    target = _Path("/output/entry.txt")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(line, encoding="utf-8")
-    target.chmod(0o644)
-    raw = target.read_bytes()
-    if _sha256(raw).hexdigest() != _sha256(line.encode("utf-8")).hexdigest():
-        raise SystemExit("entry.txt bytes differ from the chosen line")
-    if _md5(raw).hexdigest() != _md5(line.encode("utf-8")).hexdigest():
-        raise SystemExit("entry.txt md5 differs from the chosen line")
-    import stat as _stat
-    if _stat.S_IMODE(target.stat().st_mode) != 0o644:
-        raise SystemExit("entry.txt is not world-readable")
-    checked = raw.decode("utf-8")
-    if not _acceptable(checked):
-        raise SystemExit("entry.txt fails the gate after writing")
-    print(line, flush=True)
-if __name__ == "__main__": _publish(_choose(_ENTRIES))
+"""Pick the funniest one-line voicemail greeting a cat could record.
+
+The brief asks for a single line, at most 120 characters, spoken as if
+the cat itself picked up the phone and recorded the greeting. Twelve
+greetings are drafted, each one revised once, then graded on five
+yardsticks in the order the brief lists them: whether it sounds like a
+genuine voicemail greeting and makes you laugh, whether the humour is
+specifically feline, whether the cat has a distinct attitude, whether
+it plays well out loud with the punch arriving fast, and whether the
+phrasing feels new. The yardsticks carry weights 3, 3, 2, 2 and 1, so a
+perfect card is 110. The best total wins; a tie breaks toward the
+shorter greeting. The winning line is printed and saved to
+/output/entry.txt, then the saved bytes are checked against the line
+with a SHA-256 digest before the program exits.
+"""
+
+import hashlib
+import os
+
+
+CRITERIA = (
+    ("greeting_and_laugh", 3),
+    ("feline_joke", 3),
+    ("cat_attitude", 2),
+    ("spoken_punch", 2),
+    ("originality", 1),
+)
+
+BANNED_BITS = (
+    "after the tone",
+    "this is the cat speaking",
+)
+
+WINNER_BITS = [
+    "You've reached the cat.",
+    "I saw you call.",
+    "I chose not to answer.",
+    "Leave a message — I'll knock it off the table later.",
+]
+
+CANDIDATES = [
+    {
+        "first": "You've reached the cat. I saw you call. I chose not to answer. Leave a message, I'll knock it off the table later.",
+        "second": " ".join(WINNER_BITS),
+        "note": "The comma became an em dash, so the caller hangs a beat before the knock-it-off punch lands last.",
+        "points": (10, 9, 10, 9, 9),
+    },
+    {
+        "first": "Hi, it's Biscuit. I just batted the phone off the table, so be quick. I only come running for the can opener.",
+        "second": "Hi, it's Biscuit. I just batted the phone off the table, so be quick. I only come running for the can opener.",
+        "note": "Kept as drafted: the can opener is the whole joke, and nothing else needs saying.",
+        "points": (9, 9, 9, 8, 8),
+    },
+    {
+        "first": "Hey, Waffles here. The phone is in the sink now, so make it snappy. That beep you hear? That's me. Meow.",
+        "second": "Hey, Waffles here. The phone is in the sink now, so make it snappy. That beep you hear? That's me. Meow.",
+        "note": "Kept as drafted: the beep turning out to be the cat is already the punchline.",
+        "points": (9, 8, 9, 9, 9),
+    },
+    {
+        "first": "Hi, it's Miso. I'm busy pushing your glass off the table, so leave a message. I'll ignore it at 4 a.m.",
+        "second": "Hi, it's Miso. I'm busy pushing your glass off the table. Leave a message and I'll ignore it at 4 a.m.",
+        "note": "Dropped the 'so' and split the sentence; the 4 a.m. callback now lands on its own.",
+        "points": (9, 9, 8, 8, 8),
+    },
+    {
+        "first": "Meow. It's 4 a.m. and I'm starving, so leave a message and I'll eat it. The human will call you back. Maybe.",
+        "second": "Meow. It's 4 a.m. and I'm starving, so leave a message and I'll eat it. The human will call you back. Maybe.",
+        "note": "Kept as drafted: 'Maybe.' standing alone is the shrug this line needs.",
+        "points": (9, 9, 8, 8, 8),
+    },
+    {
+        "first": "You've reached Whiskers. I'm napping in the box your parcel came in. Leave a message; I'll sit on it later.",
+        "second": "You've reached Whiskers. I'm napping in the box your parcel came in. Leave a message, I'll sit on it later.",
+        "note": "The comma keeps the line rolling like speech; the semicolon made it read like a memo.",
+        "points": (9, 9, 8, 8, 8),
+    },
+    {
+        "first": "Hi, this is Beans. I'm busy sitting in the empty box you threw away. Leave a message, I'll pretend I didn't hear it.",
+        "second": "Hi, this is Beans. I'm busy sitting in the empty box you threw away. Leave a message, I'll pretend I didn't hear it.",
+        "note": "Kept as drafted: the thrown-away box is the joke, and it is already doing all the work.",
+        "points": (9, 9, 8, 8, 8),
+    },
+    {
+        "first": "Hey, it's Pickles. The human's out; I'm in charge now. Leave a message after the beep, then go shake the treat bag.",
+        "second": "Hey, it's Pickles. The human's out, so I'm in charge now. Leave a message after the beep, then go shake the treat bag.",
+        "note": "Swapped the semicolon for 'so': the takeover now sounds like a decree, not a list.",
+        "points": (9, 7, 9, 8, 8),
+    },
+    {
+        "first": "You've reached Mochi. I'm asleep on your keyboard. Leave a message, or better, open a can of tuna and we'll talk.",
+        "second": "You've reached Mochi. I'm asleep on your keyboard. Leave a message, or better, open a can of tuna and we'll talk.",
+        "note": "Kept as drafted: the bribe is the punch, and it already arrives in the last clause.",
+        "points": (9, 8, 8, 8, 7),
+    },
+    {
+        "first": "This is Chairman Meow. I'm unavailable, currently pushing your favourite mug off the shelf. Leave a message. Or don't.",
+        "second": "This is Chairman Meow. I'm unavailable, currently pushing your favourite mug off the shelf. Leave a message. Or don't.",
+        "note": "Kept as drafted: 'Or don't.' already ends the line on the cat's indifference.",
+        "points": (9, 8, 9, 7, 6),
+    },
+    {
+        "first": "You've reached Sir Pounce. I'm currently ignoring you from the top of the fridge. Leave a message after the beep.",
+        "second": "You've reached Sir Pounce. I'm ignoring you from the top of the fridge. Leave a message after the beep.",
+        "note": "Cut 'currently': the ignoring is permanent, and the shorter sentence says so.",
+        "points": (9, 7, 9, 8, 7),
+    },
+    {
+        "first": "Meow. You've reached the cat. I'm not home, I'm on the counter knocking things off. Leave a message after the beep.",
+        "second": "Meow. You've reached the cat. I'm not home, I'm on the counter knocking things off. Leave a message after the beep.",
+        "note": "Kept as drafted: it says the cat thing plainly, and plain is all this one has.",
+        "points": (9, 8, 8, 7, 7),
+    },
+]
+
+
+def total_for(points):
+    tally = 0
+    for (_, weight), mark in zip(CRITERIA, points):
+        tally += weight * mark
+    return tally
+
+
+def passes_gate(text):
+    clean = text.strip()
+    size_ok = 1 <= len(clean) <= 120
+    single_line = not any(mark in clean for mark in ("\n", "\r", "  "))
+    lowered = clean.lower()
+    words_ok = all(bit not in lowered for bit in BANNED_BITS)
+    return size_ok and single_line and words_ok
+
+
+def pick_best(cards):
+    if len(cards) < 10:
+        raise ValueError("need at least ten drafts, got %d" % len(cards))
+
+    def grade(card):
+        line = card["second"]
+        if not passes_gate(line):
+            raise ValueError("candidate fails the brief gate: " + repr(line))
+        return (total_for(card["points"]), -len(line), line)
+
+    return max(cards, key=grade)["second"]
+
+
+def emit_entry(line):
+    folder = "/output"
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "entry.txt")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(line)
+    os.chmod(path, 0o644)
+    with open(path, "rb") as handle:
+        saved = handle.read()
+    digest_saved = hashlib.sha256(saved).hexdigest()
+    digest_line = hashlib.sha256(line.encode("utf-8")).hexdigest()
+    if digest_saved != digest_line:
+        raise SystemExit("saved bytes do not match the winning line (sha256)")
+    if saved.decode("utf-8") != line:
+        raise SystemExit("saved text does not match the winning line")
+    if len(saved) != len(line.encode("utf-8")):
+        raise SystemExit("saved byte count does not match the winning line")
+    print(line)
+
+
+def main():
+    line = pick_best(CANDIDATES)
+    emit_entry(line)
+
+
+if __name__ == "__main__":
+    main()
